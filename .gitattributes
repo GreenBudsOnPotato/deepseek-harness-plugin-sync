@@ -1,0 +1,13 @@
+# Normalize line endings per file type.
+# Batch files must keep CRLF: cmd.exe has historically mis-parsed LF-only
+# batch files, so a fresh clone on Windows must not get LF here.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# PowerShell and everything else: LF in the repository is fine on Windows
+# PowerShell 5.1 and keeps diffs clean.
+*.ps1 text eol=lf
+*.psm1 text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
