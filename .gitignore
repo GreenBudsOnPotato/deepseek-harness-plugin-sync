@@ -1,0 +1,12 @@
+# Logs produced by the sync and watch scripts
+*.log
+
+# Local profile snapshots taken before a sync (machine-specific config + manifests)
+backup-*/
+
+# Scratch / editor leftovers
+*.tmp
+*.bak
+*~
+.vscode/
+.idea/
