@@ -749,8 +749,9 @@ if ($desktopRunning) {
 }
 
 function Install-Side {
-    param([string]$Profile, $Plan, $Cli, [string]$CliKind)
-    if (@($Plan.Packages).Count -le 0) {
+    param([string]$Profile, $Plan, $Cli, [string]$CliKind, [string]$Dir)
+    $packages = @($Plan.Packages)
+    if ($packages.Count -le 0) {
         if ($Plan.BundlesChanged) {
             Write-Log "[$Profile] only the bundle list changed (packages already present); manifest written, effective after restart" 'OK'
         } else {
@@ -763,10 +764,46 @@ function Install-Side {
         Write-Log "[$Profile] desktop app is running; refusing to touch its reserved profile. Re-run with -AllowRunningDesktop to go ahead." 'WARN'
         return $false
     }
-    $code = Invoke-PluginAdd -Cli $Cli -Packages @($Plan.Packages) -Profile $Profile
-    if ($code -eq 0) { Write-Log "[$Profile] install finished" 'OK'; return $true }
-    Write-Log "[$Profile] install failed with exit $code (most often an incompatible declared peer range -> grant an exact-version exemption)" 'ERROR'
+    # The CLI can exit 0 without pnpm having re-resolved anything (its log stays
+    # empty) -- observed when two installs run back to back. So success is judged
+    # by the on-disk version, not by the exit code alone, and one retry covers it.
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $code = Invoke-PluginAdd -Cli $Cli -Packages $packages -Profile $Profile
+        $landed = @(Get-FailedTargets -Packages $packages -ProfileDir $Dir)
+        if ($landed.Count -eq 0) {
+            Write-Log "[$Profile] install finished (exit $code), all target versions present on disk" 'OK'
+            return $true
+        }
+        if ($attempt -lt 2) {
+            Write-Log "[$Profile] exit $code but not applied yet: $($landed -join ', '); retrying once" 'WARN'
+            Start-Sleep -Seconds 2
+            continue
+        }
+        Write-Log "[$Profile] install did not apply: $($landed -join ', ') (last exit $code)" 'ERROR'
+        return $false
+    }
     return $false
+}
+
+# Which requested "name@spec" entries are still absent or outside their range on disk.
+function Get-FailedTargets {
+    param([string[]]$Packages, [string]$ProfileDir)
+    $failed = New-Object System.Collections.Generic.List[string]
+    foreach ($spec in $Packages) {
+        # scoped names contain '@' too, so split at the LAST '@'
+        $at = $spec.LastIndexOf('@')
+        if ($at -le 0) { continue }
+        $name = $spec.Substring(0, $at)
+        $want = $spec.Substring($at + 1)
+        $installed = Get-InstalledVersion -ProfileDir $ProfileDir -Package $name
+        if (-not $installed) { $failed.Add("$name (absent)"); continue }
+        if ($want -match '^[\^~]|^>=' ) {
+            if (-not (Test-VersionSatisfies -Range $want -Version $installed)) { $failed.Add("$name ($installed not $want)") }
+        } elseif ($installed -ne $want) {
+            $failed.Add("$name ($installed not $want)")
+        }
+    }
+    return $failed.ToArray()
 }
 
 Write-Log '--- install ---' 'STEP'
@@ -778,8 +815,8 @@ if ($GrantExemptions) {
         Grant-VersionExemptions -Cli $cliA -Profile $ProfileA -Packages $specs
     }
 }
-$okB = Install-Side -Profile $ProfileB -Plan $planB -Cli $cliB -CliKind 'web'
-$okA = Install-Side -Profile $ProfileA -Plan $planA -Cli $cliA -CliKind 'desktop'
+$okB = Install-Side -Profile $ProfileB -Plan $planB -Cli $cliB -CliKind 'web' -Dir $dirB
+$okA = Install-Side -Profile $ProfileA -Plan $planA -Cli $cliA -CliKind 'desktop' -Dir $dirA
 
 # --- verify ---
 Write-Log '--- verify ---' 'STEP'

@@ -157,6 +157,33 @@ dsh plugin allow-version <包>@<版本> --profile web --dsh-version <确切内�
 
 ---
 
+## 踩坑记录：桌面壳不走 `tapIndex`，部分插件装了也不显示
+
+同步只保证**包在两侧都装好**，不保证每个插件在桌面版里都能渲染。有一个已知的桌面端专属陷阱：
+
+桌面版 Electron 主进程用 `protocol.handle` 把 `dsh-app://app/` 的 `/` 与 `/index.html` **直接从安装包的 dist 读出来**，只往 `<head>` 注入一句 `__DSH_BOOT_READY__`，**从不调用 DSH 宿主的 `webServer.renderIndex()`**。因此：
+
+- 插件通过 `ctx.webServer.tapIndex()` 注册的 HTML 变换（往 `</body>` 前插 `<script>`）**永远不会进桌面页面**；
+- 宿主侧一切正常——插件已加载、`/插件路由` 返回 200/401（注册了就是 401，404 才是没挂载），只是页面里没有那段脚本；
+- 桌面端唯一生效的通道是 `webserver/index-inject` 事件推的**结构化行**（`kind: global/script/script-src/style/html`），由宿主启动时收集、经 IPC 交给页面侧解释器逐行应用。
+
+判据（快速区分「装了但没注入」和「根本没装」）：
+
+```powershell
+# 已加载：返回 200 或 401；未加载：404
+Invoke-WebRequest http://127.0.0.1:19387/<插件路由> -UseBasicParsing
+```
+
+对照本机 7 个插件：声明了 `dsh.client` 的（`dsh-mnemon`、`dsh-tabbit`、`dsh-plugin`、`dsh-plugin-wallpaper-engine`、`@xmanrui/dsh-im`）走官方客户端模块管线，桌面版正常；只靠 `tapIndex` 的（当时的 `dsh-whale-widget@0.2.10`）在桌面版完全不渲染。
+
+处理方式：**先升级插件**。`dsh-whale-widget` 在 0.3.12 按社区补丁加入结构化行，0.3.13 又把它从 `script-src` 改成内联 `script` 行（`script-src` 加载失败会 reject 掉 `__DSH_BOOT_READY__`，导致宿主起不来），并把注入行的注册提到 `apply()` 第一件事（桌面端的注入表是启动时一次性收集的，订阅晚了就永远进不去）：
+
+```powershell
+.\sync.cmd -AllowRunningDesktop "-Pin" "dsh-whale-widget@0.3.18"
+```
+
+升级只改 `node_modules`，**必须完整重启桌面版**才生效——宿主在启动时把插件模块读进内存（它的 widget 文件还带 mtime 缓存），重启前访问同一路由仍会拿到旧副本。
+
 ## 文件说明
 
 | 文件 | 作用 |
@@ -168,6 +195,8 @@ dsh plugin allow-version <包>@<版本> --profile web --dsh-version <确切内�
 | `backup-*/` | 本地备份快照（已被 `.gitignore` 忽略） |
 
 脚本只读写 `<DSH_HOME>/profiles/<profile>` 这两个目录，不碰会话、凭据等其它数据。
+
+安装是否成功以**磁盘上的实际版本**为准：CLI 有可能退出码为 0 却没真正重解析（连续两次安装时见过，它的 pnpm 日志是空的），所以脚本装完会逐个核对目标版本，不一致就重试一次并如实报错。
 
 ## 回滚
 
